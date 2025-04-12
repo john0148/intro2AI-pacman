@@ -9,6 +9,7 @@ import tracemalloc
 # Import algorithms from the provided files
 from DFS import Ghost as DFSGhost
 from BFS import Ghost as BFSGhost
+from ASTAR import Ghost as ASTARGhost
 from DFS import PacmanGame as DFSPacmanGame  # We'll use this just for type compatibility
 
 # Initialize pygame
@@ -108,7 +109,7 @@ class PacmanGameUI:
             {"text": "UCS", "x": PADDING + 2*(BUTTON_WIDTH + BUTTON_MARGIN), "y": self.rows * CELL_SIZE + PADDING, 
              "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": False},
             {"text": "A*", "x": PADDING + 3*(BUTTON_WIDTH + BUTTON_MARGIN), "y": self.rows * CELL_SIZE + PADDING, 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": False}
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": True}
         ]
         
         self.ghosts = self.initial_ghosts
@@ -169,7 +170,7 @@ class PacmanGameUI:
     
     def run_algorithm(self, algorithm: str):
         """Run the selected pathfinding algorithm"""
-        if algorithm not in ["DFS", "BFS"]:
+        if algorithm not in ["DFS", "BFS","A*","UCS"]:
             print(f"Algorithm {algorithm} not implemented yet")
             return
             
@@ -222,10 +223,19 @@ class PacmanGameUI:
                 ghost = DFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
                 # Run DFS algorithm from current position
                 ghost.dfs(current_pos_int)
-            else:  # BFS
+            elif algorithm == "BFS":
+
                 ghost = BFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
-                # Run BFS algorithm from current position
+
                 ghost.bfs(current_pos_int)
+
+            elif algorithm == "A*":
+
+                ghost = ASTARGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+
+                ghost.astar(current_pos_int)
+
+            else: raise ValueError(f"Unknown algorithm: {algorithm}")
             
             # Calculate execution time
             execution_time = time.time() - start_time
