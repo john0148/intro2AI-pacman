@@ -9,22 +9,23 @@ import tracemalloc
 # Import algorithms from the provided files
 from DFS import Ghost as DFSGhost
 from BFS import Ghost as BFSGhost
-from DFS import PacmanGame as DFSPacmanGame  # We'll use this just for type compatibility
+from BFS import PacmanGame # Renamed import
 
 # Initialize pygame
 pygame.init()
 
 # Constants
-CELL_SIZE = 15
-BUTTON_HEIGHT = 35
-INFO_HEIGHT = 200
+CELL_SIZE = 10
+BUTTON_HEIGHT = 30
+INFO_HEIGHT = 100  # Giảm chiều cao của bảng thông tin
 PADDING = 10
-FONT_SIZE = 16
-BUTTON_WIDTH = 90
-BUTTON_MARGIN = 10
+FONT_SIZE = 12
+BUTTON_WIDTH = 70
+BUTTON_MARGIN = 8
 ANIMATION_SPEED = 5  # Frames per animation change
 GHOST_MOVE_SPEED = 0.1  # Ghost movement speed (cells per frame)
-GHOST_OFFSET = 4  # Pixel offset for overlapping ghosts
+GHOST_OFFSET = 3
+LEVEL_BUTTON_WIDTH = 60  # Width for level buttons
 
 # Colors
 BLACK = (0, 0, 0)
@@ -57,66 +58,100 @@ ELEMENT_COLORS = {
 class PacmanGameUI:
     def __init__(self, maze_file: str):
         self.maze_file = maze_file
-        self.maze, self.initial_ghosts, self.initial_pacman_pos = self.read_maze(self.maze_file)
-        self.original_maze = [row[:] for row in self.maze]  # Deep copy
-        self.rows = len(self.maze)
-        self.cols = len(self.maze[0]) if self.rows > 0 else 0
+        self.maze = []
+        self.initial_ghosts = []
+        self.initial_pacman_pos = None
+        self.original_maze = []
+        self.rows = 0
+        self.cols = 0
+        
         self.active_algorithm = None
+        self.selected_algorithm = None  # Currently selected algorithm (might not be active yet)
+        self.selected_level = None  # Track the currently selected level button
+        self.level_buttons = []  # Dynamic level buttons
+        self.show_level_buttons = False  # Whether to show level buttons
+
+        # Metrics for individual runs (used for info panel while playing)
         self.paths = {}
-        self.open_nodes = {}
-        self.execution_times = {}
-        self.memory_used = {}
+        self.open_nodes_last_run = {}
+        self.execution_times_last_run = {}
+        self.memory_used_last_run = {}
+
+        # --- Cumulative Performance Metrics --- 
+        self.cumulative_exec_time: Dict[str, float] = {}
+        self.cumulative_expanded_nodes: Dict[str, int] = {}
+        self.cumulative_peak_memory: Dict[str, float] = {}
+        self.metrics_finalized = False
+        self.game_start_time = time.perf_counter()
+        self.game_end_time: Optional[float] = None
+        # --- End Cumulative Metrics --- 
+
         self.running = False
-        self.scroll_y = 0  # Add scroll position
-        self.max_scroll = 0  # Add maximum scroll value
+        self.scroll_y = 0
+        self.max_scroll = 0
         self.animation_frame = 0
         self.frame_counter = 0
         
-        # Ghost animation variables
-        self.ghost_positions = {ghost_type: {"pos": list(pos), "path_index": 0, "moving": False} 
-                              for pos, ghost_type in self.initial_ghosts}
-        
-        # Ghost drawing order (to maintain consistent layering)
-        self.ghost_order = ['b', 'p', 'i', 'c']  # Red, Pink, Blue, Orange
-        
-        # Load images
+        self.ghost_positions = {}
+        self.ghost_order = ['b', 'p', 'i', 'c']
+        self.ghost_algorithms = {}  # For storing which algorithm to use for each ghost
+
         self.load_images()
         
-        # Create a game state object for the algorithms
-        self.game_state = DFSPacmanGame(self.maze, self.initial_pacman_pos)
+        # Add left padding for buttons area - make it wide enough for both algorithm and level buttons
+        self.left_panel_width = 2 * BUTTON_WIDTH + 3 * PADDING + BUTTON_MARGIN
         
-        # Initialize screen
-        self.screen_width = self.cols * CELL_SIZE
-        self.screen_height = self.rows * CELL_SIZE + BUTTON_HEIGHT + INFO_HEIGHT
+        # Initialize screen with default dimensions (will be updated after maze loading)
+        self.screen_width = self.left_panel_width + 500  # Default width
+        self.screen_height = 500 + BUTTON_HEIGHT + INFO_HEIGHT  # Default height
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Pacman Pathfinding Visualization")
-        
+
         # Create info surface
         self.info_surface = pygame.Surface((self.screen_width - 2*PADDING, INFO_HEIGHT*2))
-        self.info_rect = pygame.Rect(PADDING, self.rows * CELL_SIZE + BUTTON_HEIGHT + PADDING, 
+        self.info_rect = pygame.Rect(PADDING, 500 + BUTTON_HEIGHT + PADDING,
                                    self.screen_width - 2*PADDING, INFO_HEIGHT - 2*PADDING)
-        
-        # Initialize font
+
         self.font = pygame.font.SysFont('Arial', FONT_SIZE)
+
+        # Create algorithm buttons on the left side
+        self.create_algorithm_buttons()
         
-        # Create buttons
-        self.buttons = [
-            {"text": "DFS", "x": PADDING, "y": self.rows * CELL_SIZE + PADDING, 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": True},
-            {"text": "BFS", "x": PADDING + BUTTON_WIDTH + BUTTON_MARGIN, "y": self.rows * CELL_SIZE + PADDING, 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": True},
-            {"text": "UCS", "x": PADDING + 2*(BUTTON_WIDTH + BUTTON_MARGIN), "y": self.rows * CELL_SIZE + PADDING, 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": False},
-            {"text": "A*", "x": PADDING + 3*(BUTTON_WIDTH + BUTTON_MARGIN), "y": self.rows * CELL_SIZE + PADDING, 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT - 2*PADDING, "enabled": False}
-        ]
+        # Now load the maze and initialize game state
+        self.maze, self.initial_ghosts, self.initial_pacman_pos = self.read_maze(self.maze_file)
+        self.original_maze = [row[:] for row in self.maze]  # Deep copy
         
+        # Update screen dimensions based on actual maze size
+        self.screen_width = self.left_panel_width + self.cols * CELL_SIZE
+        self.screen_height = self.rows * CELL_SIZE + INFO_HEIGHT  # Removed BUTTON_HEIGHT to make UI shorter
+        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        
+        # Update info rectangle to be at the bottom left, below the maze
+        self.info_rect = pygame.Rect(PADDING, self.rows * CELL_SIZE + PADDING,
+                                   self.screen_width - 2*PADDING, INFO_HEIGHT - 2*PADDING)
+
+        self.ghost_positions = {ghost_type: {"pos": list(pos), "path_index": 0, "moving": False}
+                              for pos, ghost_type in self.initial_ghosts}
+                              
         self.ghosts = self.initial_ghosts
         self.pacman_pos = self.initial_pacman_pos
         
+        # Create a game state object using the imported PacmanGame
+        self.game_state = PacmanGame(self.maze, self.initial_pacman_pos)
+
         self.game_over = False
         self.win = False
-    
+        self._initialize_cumulative_metrics() # Call helper to initialize
+
+    def _initialize_cumulative_metrics(self):
+        """Initialize or reset cumulative metrics for all potential ghosts."""
+        self.cumulative_exec_time = {g_type: 0.0 for _, g_type in self.initial_ghosts}
+        self.cumulative_expanded_nodes = {g_type: 0 for _, g_type in self.initial_ghosts}
+        self.cumulative_peak_memory = {g_type: 0.0 for _, g_type in self.initial_ghosts}
+        self.metrics_finalized = False
+        self.game_start_time = time.perf_counter()
+        self.game_end_time = None
+
     def load_images(self):
         """Load and scale all game images"""
         # Load Pacman animation frames
@@ -154,6 +189,23 @@ class PacmanGameUI:
                         else:
                             maze_row.append(cell)
                     maze.append(maze_row)
+                
+                # Make sure we have a valid maze with at least one row
+                if not maze:
+                    raise ValueError("Empty maze file")
+                
+                # Verify all rows have the same length
+                expected_cols = len(maze[0])
+                for i, row in enumerate(maze):
+                    if len(row) != expected_cols:
+                        print(f"Warning: Row {i} has inconsistent length. Padding with empty spaces.")
+                        # Pad row if needed
+                        while len(row) < expected_cols:
+                            row.append(' ')
+                        # Trim row if too long
+                        if len(row) > expected_cols:
+                            maze[i] = row[:expected_cols]
+                
         except Exception as e:
             print(f"Error reading maze file: {e}")
             # Create a small default maze if file can't be read
@@ -165,92 +217,248 @@ class PacmanGameUI:
             ghosts = [((3, 1), "b")]
             pacman_pos = (1, 1)
             
+        # Update the rows and cols properties
+        self.rows = len(maze)
+        self.cols = len(maze[0]) if self.rows > 0 else 0
+            
         return maze, ghosts, pacman_pos
     
+    def create_algorithm_buttons(self):
+        """Create algorithm buttons on the left side of the screen"""
+        # Position calculations for the left side - add padding to create separation from maze
+        button_x = PADDING
+        
+        # Create algorithm buttons
+        self.buttons = [
+            {"text": "DFS", "x": button_x, "y": PADDING, 
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"},
+            {"text": "BFS", "x": button_x, "y": PADDING + BUTTON_HEIGHT + BUTTON_MARGIN, 
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"},
+            {"text": "UCS", "x": button_x, "y": PADDING + 2*(BUTTON_HEIGHT + BUTTON_MARGIN), 
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": False, "type": "algorithm"},
+            {"text": "Astar", "x": button_x, "y": PADDING + 3*(BUTTON_HEIGHT + BUTTON_MARGIN), 
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": False, "type": "algorithm"},
+            {"text": "Parallel", "x": button_x, "y": PADDING + 4*(BUTTON_HEIGHT + BUTTON_MARGIN), 
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"}
+        ]
+        
+        # Initialize empty level buttons (will be populated when algorithm is selected)
+        self.level_buttons = []
+    
+    def create_level_buttons(self, algorithm):
+        """Create level buttons based on selected algorithm"""
+        if not algorithm:
+            self.level_buttons = []
+            return
+        
+        # Position calculations - level buttons will be to the right of algorithm buttons
+        button_x = PADDING + BUTTON_WIDTH + BUTTON_MARGIN
+        
+        self.level_buttons = []
+        for i in range(5):
+            self.level_buttons.append({
+                "text": f"level_{i+1}", 
+                "x": button_x, 
+                "y": PADDING + i*(BUTTON_HEIGHT + BUTTON_MARGIN), 
+                "width": LEVEL_BUTTON_WIDTH, 
+                "height": BUTTON_HEIGHT, 
+                "enabled": True,
+                "type": "level",
+                "algorithm": algorithm
+            })
+
+    def load_level(self, algorithm, level):
+        """Load a level for the specified algorithm"""
+        if algorithm == "Parallel":
+            # Set different algorithms for different ghosts
+            self.ghost_algorithms = {
+                'b': "BFS",  # Red Ghost -> BFS
+                'i': "BFS",  # Blue Ghost -> BFS
+                'p': "DFS",  # Pink Ghost -> DFS
+                'c': "DFS"   # Orange Ghost -> DFS
+            }
+            level_file = f"res/level/Parallel/{level}.csv"
+        else:
+            # Set the same algorithm for all ghosts
+            self.ghost_algorithms = {ghost_type: algorithm for ghost_type in self.ghost_order}
+            level_file = f"res/level/{algorithm}/{level}.csv"
+        
+        # Check if file exists
+        if not os.path.exists(level_file):
+            print(f"Warning: Level file {level_file} not found.")
+            return False
+        
+        # Load the maze file
+        self.maze_file = level_file
+        self.reset_game()  # Reset game state with new maze
+        self.active_algorithm = algorithm
+        
+        # Run algorithm if not Parallel
+        if algorithm != "Parallel":
+            self.run_algorithm(algorithm)
+        else:
+            self.run_parallel_algorithms()
+        
+        return True
+    
+    def run_parallel_algorithms(self):
+        """Run different algorithms for different ghosts in parallel"""
+        self.active_algorithm = "Parallel"
+        
+        # Clear only the last run metrics
+        self.paths = {}
+        self.open_nodes_last_run = {}
+        self.execution_times_last_run = {}
+        self.memory_used_last_run = {}
+        
+        # Run algorithm for each ghost
+        for ghost_type in list(self.ghost_positions.keys()):
+            algorithm = self.ghost_algorithms.get(ghost_type)
+            if not algorithm:
+                continue
+                
+            ghost_info = self.ghost_positions[ghost_type]
+            current_pos_float = ghost_info["pos"]
+            current_pos_int = (int(round(current_pos_float[0])), int(round(current_pos_float[1])))
+
+            if not self.game_state.is_valid_position(current_pos_int):
+                print(f"Warning: Ghost {ghost_type} at invalid position {current_pos_int}. Skipping recalculation.")
+                continue
+
+            if current_pos_int == self.pacman_pos:
+                self.paths[ghost_type] = [current_pos_int]
+                self.open_nodes_last_run[ghost_type] = 0
+                self.execution_times_last_run[ghost_type] = 0
+                self.memory_used_last_run[ghost_type] = 0
+                ghost_info["moving"] = False
+                ghost_info["path_index"] = 0
+                continue
+
+            # --- Metrics Measurement Start --- 
+            tracemalloc.start()
+            start_time = time.perf_counter()
+            
+            ghost = None
+            path_found = False
+            visited_nodes_this_run = set()
+            open_nodes_this_run = 0
+
+            try:
+                if algorithm == "DFS":
+                    ghost = DFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.dfs(current_pos_int)
+                else:  # BFS
+                    ghost = BFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.bfs(current_pos_int)
+            finally:
+                exec_time_this_run = time.perf_counter() - start_time
+                current_mem, peak_mem = tracemalloc.get_traced_memory()
+                peak_mem_kb = peak_mem / 1024
+                tracemalloc.stop()
+            # --- Metrics Measurement End --- 
+
+            # --- Store metrics and update ghost movement --- 
+            ghost_path = ghost.path if ghost and ghost.path else [current_pos_int]
+            self.paths[ghost_type] = ghost_path
+            self.open_nodes_last_run[ghost_type] = open_nodes_this_run
+            self.execution_times_last_run[ghost_type] = exec_time_this_run
+            self.memory_used_last_run[ghost_type] = peak_mem_kb
+
+            # Update cumulative metrics
+            if not self.metrics_finalized:
+                self.cumulative_exec_time[ghost_type] = self.cumulative_exec_time.get(ghost_type, 0) + exec_time_this_run
+                self.cumulative_expanded_nodes[ghost_type] = self.cumulative_expanded_nodes.get(ghost_type, 0) + open_nodes_this_run
+                self.cumulative_peak_memory[ghost_type] = max(self.cumulative_peak_memory.get(ghost_type, 0), peak_mem_kb)
+
+            # Start ghost movement
+            ghost_info["moving"] = True
+            ghost_info["path_index"] = 0
+            if ghost_path:
+                ghost_info["pos"] = list(ghost_path[0])
+            else:
+                ghost_info["pos"] = list(current_pos_int)
+                
     def run_algorithm(self, algorithm: str):
         """Run the selected pathfinding algorithm"""
-        if algorithm not in ["DFS", "BFS"]:
+        if algorithm not in ["DFS", "BFS", "Parallel"]:
             print(f"Algorithm {algorithm} not implemented yet")
+            return
+            
+        if algorithm == "Parallel":
+            self.run_parallel_algorithms()
             return
             
         self.active_algorithm = algorithm
         
-        # Clear previous results (paths and metrics)
+        # Clear only the last run metrics
         self.paths = {}
-        self.open_nodes = {}
-        self.execution_times = {}
-        self.memory_used = {}
+        self.open_nodes_last_run = {}
+        self.execution_times_last_run = {}
+        self.memory_used_last_run = {}
         
-        # Run the algorithm for each ghost from its current position
-        # Iterate over a copy of keys in case the dictionary changes
+        # Iterate over a copy of keys
         for ghost_type in list(self.ghost_positions.keys()): 
             ghost_info = self.ghost_positions[ghost_type]
             current_pos_float = ghost_info["pos"]
-            # Convert float position (used for animation) to integer grid coordinates
             current_pos_int = (int(round(current_pos_float[0])), int(round(current_pos_float[1])))
 
-            # If the ghost's integer position is invalid (e.g., in a wall due to rounding during movement),
-            # try to find the nearest valid original ghost start position to reset to, or skip.
-            # This prevents errors if the ghost gets stuck visually.
             if not self.game_state.is_valid_position(current_pos_int):
-                 print(f"Warning: Ghost {ghost_type} at invalid position {current_pos_int}. Skipping recalculation for this step.")
-                 # Optionally, find the original start pos for this ghost_type and use it
-                 # original_start_pos = next((pos for pos, g_type in self.ghosts if g_type == ghost_type), None)
-                 # if original_start_pos and self.game_state.is_valid_position(original_start_pos):
-                 #    current_pos_int = original_start_pos
-                 #    ghost_info["pos"] = list(original_start_pos) # Reset visual position too
-                 # else:
-                 #    continue # Cannot find a valid position
-                 continue # Skip this ghost for this recalculation cycle
+                 print(f"Warning: Ghost {ghost_type} at invalid position {current_pos_int}. Skipping recalculation.")
+                 continue
 
-            # Skip calculation if ghost is already at Pacman's position
             if current_pos_int == self.pacman_pos:
-                 self.paths[ghost_type] = [current_pos_int] # Path is just the current spot
-                 self.open_nodes[ghost_type] = 0
-                 self.execution_times[ghost_type] = 0
-                 self.memory_used[ghost_type] = 0
-                 ghost_info["moving"] = False # Ensure it's marked as not moving
+                 self.paths[ghost_type] = [current_pos_int]
+                 self.open_nodes_last_run[ghost_type] = 0
+                 self.execution_times_last_run[ghost_type] = 0
+                 self.memory_used_last_run[ghost_type] = 0
+                 ghost_info["moving"] = False
                  ghost_info["path_index"] = 0
-                 continue 
-                
-            # Start memory tracking
+                 continue
+
+            # --- Metrics Measurement Start --- 
             tracemalloc.start()
-            start_time = time.time()
+            start_time = time.perf_counter()
             
-            # Create the appropriate ghost object based on the algorithm, starting from current_pos_int
-            if algorithm == "DFS":
-                ghost = DFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
-                # Run DFS algorithm from current position
-                ghost.dfs(current_pos_int)
-            else:  # BFS
-                ghost = BFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
-                # Run BFS algorithm from current position
-                ghost.bfs(current_pos_int)
-            
-            # Calculate execution time
-            execution_time = time.time() - start_time
-            
-            # Get memory usage
-            current, peak = tracemalloc.get_traced_memory()
-            memory_used = peak / 1024  # Convert to KB
-            tracemalloc.stop()
-            
-            # Store results
-            # Ensure path is not empty before storing
-            ghost_path = ghost.path if ghost.path else [current_pos_int] 
+            ghost = None
+            path_found = False
+            visited_nodes_this_run = set()
+            open_nodes_this_run = 0
+
+            try:
+                if algorithm == "DFS":
+                    ghost = DFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.dfs(current_pos_int)
+                else:  # BFS
+                    ghost = BFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.bfs(current_pos_int)
+            finally:
+                exec_time_this_run = time.perf_counter() - start_time
+                current_mem, peak_mem = tracemalloc.get_traced_memory()
+                peak_mem_kb = peak_mem / 1024
+                tracemalloc.stop()
+            # --- Metrics Measurement End --- 
+
+            # --- Store Last Run Metrics (for info panel) --- 
+            ghost_path = ghost.path if ghost and ghost.path else [current_pos_int]
             self.paths[ghost_type] = ghost_path
-            self.open_nodes[ghost_type] = ghost.open_nodes
-            self.execution_times[ghost_type] = execution_time
-            self.memory_used[ghost_type] = memory_used
-            
-            # Start or continue ghost movement with the new path
-            # Reset path index to follow the new path from the beginning
+            self.open_nodes_last_run[ghost_type] = open_nodes_this_run
+            self.execution_times_last_run[ghost_type] = exec_time_this_run
+            self.memory_used_last_run[ghost_type] = peak_mem_kb
+            # --- End Store Last Run Metrics --- 
+
+            # --- Update Cumulative Metrics (if game not over) --- 
+            if not self.metrics_finalized:
+                self.cumulative_exec_time[ghost_type] += exec_time_this_run
+                self.cumulative_expanded_nodes[ghost_type] += open_nodes_this_run
+                self.cumulative_peak_memory[ghost_type] = max(self.cumulative_peak_memory[ghost_type], peak_mem_kb)
+            # --- End Update Cumulative Metrics --- 
+
+            # Start or continue ghost movement
             ghost_info["moving"] = True
-            ghost_info["path_index"] = 0 
-            # Ensure the visual position corresponds to the start of the new path
+            ghost_info["path_index"] = 0
             if ghost_path:
                  ghost_info["pos"] = list(ghost_path[0])
-            else: # Should not happen if path is [current_pos_int] when empty
+            else:
                  ghost_info["pos"] = list(current_pos_int)
 
     def update_ghost_positions(self):
@@ -293,11 +501,7 @@ class PacmanGameUI:
         row, col = new_pos
         if 0 <= row < self.rows and 0 <= col < self.cols and self.maze[row][col] != 'x':
             # Check if Pacman is eating a dot or super dot
-            if self.maze[row][col] == '.' or self.maze[row][col] == 'o':
-                # Clear the dot/super dot (it will be replaced by 'P' next)
-                pass # No explicit action needed, overwriting with 'P' handles it.
-
-            # Update maze
+            is_dot = self.maze[row][col] == '.' or self.maze[row][col] == 'o'
             self.maze[self.pacman_pos[0]][self.pacman_pos[1]] = ' '
             self.maze[row][col] = 'P'
             self.pacman_pos = (row, col)
@@ -305,19 +509,21 @@ class PacmanGameUI:
             # Update game state for algorithms
             self.game_state.update_pacman_position(new_pos)
             
-            # Re-run the active algorithm if any
-            if self.active_algorithm and not self.game_over and not self.win:
-                 # Check win condition immediately after eating potential last dot
-                 if self.check_win_condition():
-                     self.win = True
-                     print("Win condition met!") # Debug print
+            # Check for win/game over AFTER moving and updating state
+            if is_dot and self.check_win_condition():
+                self.win = True
+                self.finalize_metrics() # Finalize metrics on win
+                print("Win condition met!")
+            elif self.check_collision():
+                 self.game_over = True
+                 self.finalize_metrics() # Finalize metrics on game over
+                 print("Collision detected after Pacman move!")
+            elif self.active_algorithm and not self.win:
+                 # Re-run the algorithm if the game is still active
+                 if self.active_algorithm == "Parallel":
+                     self.run_parallel_algorithms()
                  else:
-                     # Check collision immediately after moving
-                     if self.check_collision():
-                         self.game_over = True
-                         print("Collision detected!") # Debug print
-                     elif self.active_algorithm: # Only run algorithm if game continues
-                         self.run_algorithm(self.active_algorithm)
+                     self.run_algorithm(self.active_algorithm)
             
             return True
         return False
@@ -335,23 +541,31 @@ class PacmanGameUI:
         # Update ghost positions
         self.update_ghost_positions()
         
-        # Draw maze
-        for i in range(self.rows):
-            for j in range(self.cols):
-                cell = self.maze[i][j]
-                if cell == 'P':  # Draw Pacman
-                    # Draw Pacman with current animation frame
-                    self.screen.blit(self.pacman_frames[self.animation_frame], 
-                                   (j * CELL_SIZE, i * CELL_SIZE))
-                else:
-                    color = ELEMENT_COLORS.get(cell, BLACK)
-                    # Draw cell
-                    pygame.draw.rect(self.screen, color, 
-                                    (j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE))
-                
-                # Draw cell border
-                pygame.draw.rect(self.screen, DARK_GRAY, 
-                                (j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE), 1)
+        # Draw maze - offset by left panel width to accommodate buttons
+        maze_offset_x = self.left_panel_width
+        
+        # Ensure we have valid maze dimensions
+        rows = len(self.maze)
+        if rows > 0:
+            cols = len(self.maze[0])
+            
+            # Draw each cell of the maze
+            for i in range(rows):
+                for j in range(cols):
+                    cell = self.maze[i][j]
+                    if cell == 'P':  # Draw Pacman
+                        # Draw Pacman with current animation frame
+                        self.screen.blit(self.pacman_frames[self.animation_frame], 
+                                       (maze_offset_x + j * CELL_SIZE, i * CELL_SIZE))
+                    else:
+                        color = ELEMENT_COLORS.get(cell, BLACK)
+                        # Draw cell
+                        pygame.draw.rect(self.screen, color, 
+                                        (maze_offset_x + j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE))
+                    
+                    # Draw cell border
+                    pygame.draw.rect(self.screen, DARK_GRAY, 
+                                    (maze_offset_x + j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE), 1)
         
         # Group ghosts by position
         ghost_groups = {}
@@ -372,7 +586,7 @@ class PacmanGameUI:
                 ghost_img = self.ghost_images.get(ghost_type)
                 if ghost_img:
                     ghost_info = self.ghost_positions[ghost_type]
-                    base_x = ghost_info["pos"][1] * CELL_SIZE
+                    base_x = maze_offset_x + ghost_info["pos"][1] * CELL_SIZE
                     base_y = ghost_info["pos"][0] * CELL_SIZE
                     
                     # Apply offset based on position in group
@@ -386,11 +600,13 @@ class PacmanGameUI:
                     self.screen.blit(ghost_img, 
                                    (base_x + offset_x, base_y + offset_y))
         
-        # Draw buttons
+        # Draw algorithm buttons
         for button in self.buttons:
-            # Button background
+            # Button background - default color
             color = LIGHT_GRAY if button["enabled"] else DARK_GRAY
-            if button["enabled"] and self.active_algorithm == button["text"]:
+            
+            # Only highlight the currently selected algorithm
+            if button["enabled"] and button["text"] == self.selected_algorithm:
                 color = GREEN
                 
             pygame.draw.rect(self.screen, color, 
@@ -402,129 +618,199 @@ class PacmanGameUI:
                                              button["y"] + button["height"]//2))
             self.screen.blit(text, text_rect)
         
-        # Draw info panel
-        # Clear info surface
+        # Draw level buttons if algorithm is selected
+        if self.show_level_buttons and self.level_buttons:
+            for button in self.level_buttons:
+                # Only highlight the level button if it's selected and belongs to current algorithm
+                if self.selected_level == button["text"] and self.selected_algorithm == button["algorithm"]:
+                    color = GREEN
+                else:
+                    color = LIGHT_GRAY
+                
+                pygame.draw.rect(self.screen, color, 
+                                (button["x"], button["y"], button["width"], button["height"]))
+                
+                text = self.font.render(button["text"], True, BLACK)
+                text_rect = text.get_rect(center=(button["x"] + button["width"]//2, 
+                                                 button["y"] + button["height"]//2))
+                self.screen.blit(text, text_rect)
+        
+        # --- Draw Info Panel --- 
         self.info_surface.fill(BLACK)
-        
-        # Draw info panel content
         info_y = PADDING
-        
-        # Draw algorithm info
-        if self.active_algorithm:
-            algorithm_text = self.font.render(f"Algorithm: {self.active_algorithm}", True, WHITE)
+
+        # --- Info Panel Content Logic --- 
+        if self.active_algorithm and not self.game_over and not self.win:
+            algorithm_text = self.font.render(f"Algorithm: {self.active_algorithm} (Live)", True, WHITE)
             self.info_surface.blit(algorithm_text, (0, info_y))
             info_y += FONT_SIZE + 5
-            
-            # Draw metrics for each ghost
-            for ghost_type in self.ghost_order:  # Use consistent order
+
+            # Draw metrics for each ghost (Last Run)
+            for ghost_type in self.ghost_order:
                 if ghost_type in self.paths:
-                    ghost_name = {
-                        'b': 'Red Ghost',
-                        'i': 'Blue Ghost',
-                        'p': 'Pink Ghost',
-                        'c': 'Orange Ghost'
-                    }.get(ghost_type, ghost_type)
-                    
+                    ghost_name = { 'b': 'Red', 'i': 'Blue', 'p': 'Pink', 'c': 'Orange'}.get(ghost_type, ghost_type)
                     color = ELEMENT_COLORS.get(ghost_type, WHITE)
-                    ghost_text = self.font.render(f"{ghost_name}:", True, color)
+                    
+                    # For parallel mode, show which algorithm each ghost is using
+                    if self.active_algorithm == "Parallel" and ghost_type in self.ghost_algorithms:
+                        ghost_algo = self.ghost_algorithms[ghost_type]
+                        ghost_text = self.font.render(f"{ghost_name} ({ghost_algo}):", True, color)
+                    else:
+                        ghost_text = self.font.render(f"{ghost_name}:", True, color)
+                        
                     self.info_surface.blit(ghost_text, (0, info_y))
                     info_y += FONT_SIZE + 5
-                    
+
+                    path_len = len(self.paths.get(ghost_type, []))
+                    expanded_nodes_lr = self.open_nodes_last_run.get(ghost_type, 0)
+                    exec_time = self.execution_times_last_run.get(ghost_type, 0)
+                    mem_used = self.memory_used_last_run.get(ghost_type, 0)
+
                     path_text = self.font.render(
-                        f"  Path length: {len(self.paths.get(ghost_type, []))} | "
-                        f"Open nodes: {self.open_nodes.get(ghost_type, 0)} | "
-                        f"Time: {self.execution_times.get(ghost_type, 0):.4f}s | "
-                        f"Memory: {self.memory_used.get(ghost_type, 0):.2f} KB", 
+                        f"  Last Run -> Len: {path_len} | Expanded: {expanded_nodes_lr} | "
+                        f"Time: {exec_time:.4f}s | Mem: {mem_used:.2f} KB",
                         True, WHITE)
                     self.info_surface.blit(path_text, (0, info_y))
                     info_y += FONT_SIZE + 10
-        else:
+        elif not self.active_algorithm and not self.game_over and not self.win:
+            # Display instructions in a more compact format at the bottom left
             instructions = [
-                "Click on a search algorithm button to visualize pathfinding",
-                "Use arrow keys to move Pacman",
-                "Hold Ctrl + Up/Down arrows to scroll info panel",
-                "The algorithm will re-run each time Pacman moves"
+                "Algorithms: Left buttons | Levels: Right buttons",
+                "Controls: Arrow keys | Scroll: Ctrl+Up/Down | Reset: R"
             ]
-            
             for instruction in instructions:
                 text = self.font.render(instruction, True, WHITE)
                 self.info_surface.blit(text, (0, info_y))
                 info_y += FONT_SIZE + 5
-        
-        # Update max scroll value
-        self.max_scroll = max(0, info_y - INFO_HEIGHT + 2*PADDING)
-        
-        # Draw the visible portion of the info surface
-        self.screen.blit(self.info_surface, self.info_rect, 
+        elif self.game_over or self.win:
+             status_text = "Game Over!" if self.game_over else "You Win!"
+             status_render = self.font.render(status_text, True, RED if self.game_over else GREEN)
+             self.info_surface.blit(status_render, (0, info_y))
+             info_y += FONT_SIZE + 5
+
+        # --- Blit Info Panel and Scroll Bar --- 
+        self.max_scroll = max(0, info_y - self.info_rect.height)
+        self.screen.blit(self.info_surface, self.info_rect,
                         (0, self.scroll_y, self.info_rect.width, self.info_rect.height))
-        
-        # Draw scroll bar if needed
         if self.max_scroll > 0:
-            scroll_bar_height = max(20, (INFO_HEIGHT - 2*PADDING) * (INFO_HEIGHT - 2*PADDING) / (info_y + 2*PADDING))
-            scroll_bar_pos = (INFO_HEIGHT - 2*PADDING - scroll_bar_height) * self.scroll_y / self.max_scroll
-            pygame.draw.rect(self.screen, GRAY, 
+            scroll_bar_height = max(20, self.info_rect.height * self.info_rect.height / info_y)
+            scroll_bar_y_ratio = self.scroll_y / self.max_scroll if self.max_scroll > 0 else 0
+            scroll_bar_pos_y = self.info_rect.top + (self.info_rect.height - scroll_bar_height) * scroll_bar_y_ratio
+            pygame.draw.rect(self.screen, GRAY,
                            (self.screen_width - PADDING - 5, 
-                            self.rows * CELL_SIZE + BUTTON_HEIGHT + PADDING + scroll_bar_pos,
+                            scroll_bar_pos_y,
                             5, scroll_bar_height))
-        
-        # Draw game over/win messages
+
+        # --- Draw Game Over / Win Messages AND FINAL METRICS --- 
         if self.game_over or self.win:
-            # Semi-transparent overlay
             overlay = pygame.Surface((self.screen_width, self.screen_height), pygame.SRCALPHA)
-            overlay.fill((0, 0, 0, 180)) # Black overlay with alpha
+            overlay.fill((0, 0, 0, 180))
             self.screen.blit(overlay, (0, 0))
 
-            # Message Text
-            message_font = pygame.font.SysFont('Arial', 48, bold=True)
-            message_text = ""
-            message_color = WHITE
-
-            if self.game_over:
-                message_text = "GAME OVER"
-                message_color = RED
-            elif self.win:
-                message_text = "YOU WIN!"
-                message_color = GREEN
+            message_font = pygame.font.SysFont('Arial', 36, bold=True)
+            message_text = "GAME OVER" if self.game_over else "YOU WIN!"
+            message_color = RED if self.game_over else GREEN
+            center_x = self.screen_width // 2
+            base_y = self.screen_height // 2
 
             text_surface = message_font.render(message_text, True, message_color)
-            text_rect = text_surface.get_rect(center=(self.screen_width // 2, self.screen_height // 2 - 50)) # Position slightly above center
+            text_rect = text_surface.get_rect(center=(center_x, base_y - 50))
             self.screen.blit(text_surface, text_rect)
 
-            # Optional: Add a 'Press R to Restart' message
-            restart_font = pygame.font.SysFont('Arial', 24)
+            restart_font = pygame.font.SysFont('Arial', 18)
             restart_text = restart_font.render("Press R to Restart", True, WHITE)
-            restart_rect = restart_text.get_rect(center=(self.screen_width // 2, self.screen_height // 2 + 10))
+            restart_rect = restart_text.get_rect(center=(center_x, base_y + 10))
             self.screen.blit(restart_text, restart_rect)
-        
-        # Update display
+
+            # --- Draw Final Metrics (only on Game Over) --- 
+            if self.game_over and self.metrics_finalized:
+                metrics_y = base_y + 40
+                metrics_font = pygame.font.SysFont('Arial', 14)
+                line_height = metrics_font.get_linesize() + 2
+
+                if self.game_end_time is not None:
+                     total_game_duration = self.game_end_time - self.game_start_time
+                     duration_text = f"Total Game Duration: {total_game_duration:.3f} seconds"
+                     duration_render = metrics_font.render(duration_text, True, WHITE)
+                     duration_rect = duration_render.get_rect(center=(center_x, metrics_y))
+                     self.screen.blit(duration_render, duration_rect)
+                     metrics_y += line_height * 1.5
+
+                title_text = f"Final Metrics ({self.active_algorithm}):"                 
+                title_render = metrics_font.render(title_text, True, WHITE)
+                title_rect = title_render.get_rect(center=(center_x, metrics_y))
+                self.screen.blit(title_render, title_rect)
+                metrics_y += line_height
+
+                for ghost_type in self.ghost_order:
+                    if ghost_type in self.cumulative_exec_time:
+                        ghost_name = { 'b': 'Red', 'i': 'Blue', 'p': 'Pink', 'c': 'Orange'}.get(ghost_type, ghost_type)
+                        color = ELEMENT_COLORS.get(ghost_type, WHITE)
+                        
+                        total_time = self.cumulative_exec_time.get(ghost_type, 0.0)
+                        expanded_nodes = self.cumulative_expanded_nodes.get(ghost_type, 0)
+                        peak_mem = self.cumulative_peak_memory.get(ghost_type, 0.0)
+
+                        metrics_line = f"{ghost_name}: Time={total_time:.3f}s | Expanded Nodes={expanded_nodes} | Mem={peak_mem:.1f}KB"
+                        metrics_render = metrics_font.render(metrics_line, True, color)
+                        metrics_rect = metrics_render.get_rect(center=(center_x, metrics_y))
+                        self.screen.blit(metrics_render, metrics_rect)
+                        metrics_y += line_height
+
+        # --- Update Display --- 
         pygame.display.flip()
     
     def handle_click(self, pos: Tuple[int, int]):
         """Handle mouse click events"""
         x, y = pos
         
-        # Check if any button was clicked
+        # Check if any algorithm button was clicked
         for button in self.buttons:
             if (button["x"] <= x <= button["x"] + button["width"] and
                 button["y"] <= y <= button["y"] + button["height"] and
                 button["enabled"]):
-                # Reset the game state BEFORE running the new algorithm
-                self.reset_game()
-                self.run_algorithm(button["text"])
+                # Clear previous selections when changing algorithms
+                if self.selected_algorithm != button["text"]:
+                    # Reset selected level and clear active algorithm 
+                    self.selected_level = None
+                    self.active_algorithm = None
+                
+                # Select algorithm and show level buttons
+                self.selected_algorithm = button["text"]
+                self.create_level_buttons(button["text"])
+                self.show_level_buttons = True
                 return
-    
+        
+        # Check if any level button was clicked
+        if self.show_level_buttons:
+            for button in self.level_buttons:
+                if (button["x"] <= x <= button["x"] + button["width"] and
+                    button["y"] <= y <= button["y"] + button["height"]):
+                    # Set the selected level
+                    self.selected_level = button["text"]
+                    # Load the level for the selected algorithm
+                    self.load_level(button["algorithm"], button["text"])
+                    return
+
     def handle_key(self, key):
         """Handle keyboard events"""
         # Allow reset key even if game over/won
         if key == pygame.K_r:
             print("Restarting game via R key...")
+            
+            # Preserve the selected algorithm
+            selected_algo = self.selected_algorithm
+            
+            # Reset the game
             self.reset_game()
-            # Optionally auto-select the last algorithm or clear selection
-            if self.active_algorithm:
-                algo = self.active_algorithm # Store temporarily
-                self.active_algorithm = None # Clear it so reset doesn't rerun automatically
-                self.run_algorithm(algo) # Rerun the last algo after reset
-            return # Don't process other keys if restarting
+            
+            # Restore the algorithm selection UI state
+            if selected_algo:
+                self.selected_algorithm = selected_algo
+                self.create_level_buttons(selected_algo)
+                self.show_level_buttons = True
+                
+            return
 
         # Only handle movement/scroll if game is active
         if not self.game_over and not self.win:
@@ -546,7 +832,12 @@ class PacmanGameUI:
                 self.move_pacman((row, col - 1))
             elif key == pygame.K_RIGHT:
                 self.move_pacman((row, col + 1))
-    
+            # Add escape key to cancel algorithm selection
+            elif key == pygame.K_ESCAPE:
+                self.selected_algorithm = None
+                self.show_level_buttons = False
+                self.level_buttons = []
+
     def run(self):
         """Main game loop"""
         self.running = True
@@ -578,14 +869,15 @@ class PacmanGameUI:
                      # Check for collision after ghost movement
                      if self.check_collision():
                          self.game_over = True
-                         print("Collision detected after ghost move!") # Debug print
+                         self.finalize_metrics() # Finalize metrics
+                         print("Collision detected after ghost move!")
 
                 # Note: Win condition is checked within move_pacman
 
             # --- Drawing ---
             self.draw() # Draw the current state (including game over/win messages)
 
-            clock.tick(30) # Limit frame rate
+            clock.tick(60) # Limit frame rate
 
         pygame.quit()
         sys.exit()
@@ -604,15 +896,17 @@ class PacmanGameUI:
                               for pos, ghost_type in self.ghosts}
 
         # Reset game state object for algorithms
-        self.game_state = DFSPacmanGame(self.maze, self.pacman_pos)
+        self.game_state = PacmanGame(self.maze, self.pacman_pos)
 
-        # Reset algorithm results
+        # Reset last run metrics
         self.paths = {}
-        self.open_nodes = {}
-        self.execution_times = {}
-        self.memory_used = {}
-        # Don't reset self.active_algorithm here, it's set by the click
-
+        self.open_nodes_last_run = {}
+        self.execution_times_last_run = {}
+        self.memory_used_last_run = {}
+        
+        # Reset cumulative metrics and flags
+        self._initialize_cumulative_metrics()
+        
         # Reset game state flags
         self.game_over = False
         self.win = False
@@ -621,6 +915,10 @@ class PacmanGameUI:
         # Reset animation
         self.animation_frame = 0
         self.frame_counter = 0
+
+        # Keep selected_algorithm but clear active_algorithm
+        # This allows the user to still see level buttons for the selected algorithm
+        self.active_algorithm = None 
 
         print("Game reset complete.")
 
@@ -641,15 +939,51 @@ class PacmanGameUI:
                     return False # Found a dot, not won yet
         return True # No dots found, win!
 
+    def finalize_metrics(self):
+         """Mark metrics as final and record end time."""
+         if not self.metrics_finalized:
+             self.metrics_finalized = True
+             self.game_end_time = time.perf_counter()
+             print("Metrics finalized.")
+
 # Main function
 def main():
-    # Check if level.csv exists, if not create a sample one
+    # Ensure level directories exist
+    level_dirs = ["BFS", "DFS", "UCS", "Astar", "Parallel"]
+    for algo_dir in level_dirs:
+        dir_path = f"res/level/{algo_dir}"
+        if not os.path.exists(dir_path):
+            os.makedirs(dir_path, exist_ok=True)
+            print(f"Created directory: {dir_path}")
+            
+            # Create a sample level in each directory
+            for i in range(1, 6):
+                level_file = f"{dir_path}/level_{i}.csv"
+                if not os.path.exists(level_file):
+                    with open(level_file, 'w') as f:
+                        if algo_dir == "Parallel":
+                            # Create a larger maze with multiple ghosts for parallel mode
+                            f.write("x;x;x;x;x;x;x\n")
+                            f.write("x;P; ; ; ; ;x\n")
+                            f.write("x; ;x; ; ;b;x\n")
+                            f.write("x; ; ; ;x; ;x\n")
+                            f.write("x;c; ;x; ; ;x\n")
+                            f.write("x; ; ; ; ;p;x\n")
+                            f.write("x;i; ; ; ; ;x\n")
+                            f.write("x;x;x;x;x;x;x")
+                        else:
+                            # Create a simple maze for other algorithms
+                            f.write("x;x;x;x;x\n")
+                            f.write("x;P; ; ;x\n")
+                            f.write("x; ;x; ;x\n")
+                            f.write("x;b; ; ;x\n")
+                            f.write("x;x;x;x;x")
+    
+    # Check if level.csv exists, if not use BFS level 1
     maze_file = "res/level/level.csv"
     if not os.path.exists(maze_file):
         print(f"Warning: {maze_file} not found. Using a sample maze.")
-        maze_file = "res/level/sample_level.csv"
-        with open(maze_file, 'w') as f:
-            f.write("x;x;x;x;x\nx;P; ; ;x\nx; ;x; ;x\nx;b; ; ;x\nx;x;x;x;x")
+        maze_file = "res/level/BFS/level_1.csv"
     
     # Create and run the game
     game = PacmanGameUI(maze_file)
