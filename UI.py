@@ -9,6 +9,8 @@ import tracemalloc
 # Import algorithms from the provided files
 from DFS import Ghost as DFSGhost
 from BFS import Ghost as BFSGhost
+from ASTAR import Ghost as ASTARGhost
+from UCS import Ghost as UCSGhost
 from BFS import PacmanGame # Renamed import
 
 # Initialize pygame
@@ -23,7 +25,7 @@ FONT_SIZE = 12
 BUTTON_WIDTH = 70
 BUTTON_MARGIN = 8
 ANIMATION_SPEED = 5  # Frames per animation change
-GHOST_MOVE_SPEED = 0.1  # Ghost movement speed (cells per frame)
+GHOST_MOVE_SPEED = 0.08  # Ghost movement speed (cells per frame)
 GHOST_OFFSET = 3
 LEVEL_BUTTON_WIDTH = 60  # Width for level buttons
 
@@ -101,16 +103,18 @@ class PacmanGameUI:
         # Add left padding for buttons area - make it wide enough for both algorithm and level buttons
         self.left_panel_width = 2 * BUTTON_WIDTH + 3 * PADDING + BUTTON_MARGIN
         
+        # Info panel width - for display on the right side
+        self.info_panel_width = 200
+        
         # Initialize screen with default dimensions (will be updated after maze loading)
-        self.screen_width = self.left_panel_width + 500  # Default width
-        self.screen_height = 500 + BUTTON_HEIGHT + INFO_HEIGHT  # Default height
+        self.screen_width = self.left_panel_width + 500 + self.info_panel_width  # Default width + space for info panel
+        self.screen_height = 500  # Default height without the additional space for info at bottom
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         pygame.display.set_caption("Pacman Pathfinding Visualization")
 
         # Create info surface
-        self.info_surface = pygame.Surface((self.screen_width - 2*PADDING, INFO_HEIGHT*2))
-        self.info_rect = pygame.Rect(PADDING, 500 + BUTTON_HEIGHT + PADDING,
-                                   self.screen_width - 2*PADDING, INFO_HEIGHT - 2*PADDING)
+        self.info_surface = pygame.Surface((self.info_panel_width - 2*PADDING, 500))
+        self.info_rect = pygame.Rect(0, 0, 0, 0)  # Will be updated when maze is loaded
 
         self.font = pygame.font.SysFont('Arial', FONT_SIZE)
 
@@ -122,13 +126,17 @@ class PacmanGameUI:
         self.original_maze = [row[:] for row in self.maze]  # Deep copy
         
         # Update screen dimensions based on actual maze size
-        self.screen_width = self.left_panel_width + self.cols * CELL_SIZE
-        self.screen_height = self.rows * CELL_SIZE + INFO_HEIGHT  # Removed BUTTON_HEIGHT to make UI shorter
+        self.screen_width = self.left_panel_width + self.cols * CELL_SIZE + self.info_panel_width
+        self.screen_height = self.rows * CELL_SIZE  # No longer adding info height at bottom
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
         
-        # Update info rectangle to be at the bottom left, below the maze
-        self.info_rect = pygame.Rect(PADDING, self.rows * CELL_SIZE + PADDING,
-                                   self.screen_width - 2*PADDING, INFO_HEIGHT - 2*PADDING)
+        # Update info rectangle to be on the right side of the maze
+        self.info_rect = pygame.Rect(
+            self.left_panel_width + self.cols * CELL_SIZE + PADDING,  # Position right after maze
+            PADDING,  # Top padding
+            self.info_panel_width - 2*PADDING,  # Width of info panel
+            self.screen_height - 2*PADDING  # Height of the screen minus padding
+        )
 
         self.ghost_positions = {ghost_type: {"pos": list(pos), "path_index": 0, "moving": False}
                               for pos, ghost_type in self.initial_ghosts}
@@ -235,9 +243,9 @@ class PacmanGameUI:
             {"text": "BFS", "x": button_x, "y": PADDING + BUTTON_HEIGHT + BUTTON_MARGIN, 
              "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"},
             {"text": "UCS", "x": button_x, "y": PADDING + 2*(BUTTON_HEIGHT + BUTTON_MARGIN), 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": False, "type": "algorithm"},
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"},
             {"text": "Astar", "x": button_x, "y": PADDING + 3*(BUTTON_HEIGHT + BUTTON_MARGIN), 
-             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": False, "type": "algorithm"},
+             "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"},
             {"text": "Parallel", "x": button_x, "y": PADDING + 4*(BUTTON_HEIGHT + BUTTON_MARGIN), 
              "width": BUTTON_WIDTH, "height": BUTTON_HEIGHT, "enabled": True, "type": "algorithm"}
         ]
@@ -272,10 +280,10 @@ class PacmanGameUI:
         if algorithm == "Parallel":
             # Set different algorithms for different ghosts
             self.ghost_algorithms = {
-                'b': "BFS",  # Red Ghost -> BFS
-                'i': "BFS",  # Blue Ghost -> BFS
-                'p': "DFS",  # Pink Ghost -> DFS
-                'c': "DFS"   # Orange Ghost -> DFS
+                'b': "Astar",  # Red Ghost -> Astar
+                'i': "BFS",    # Blue Ghost -> BFS
+                'p': "DFS",    # Pink Ghost -> DFS
+                'c': "UCS"     # Orange Ghost -> UCS
             }
             level_file = f"res/level/Parallel/{level}.csv"
         else:
@@ -347,6 +355,12 @@ class PacmanGameUI:
                 if algorithm == "DFS":
                     ghost = DFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
                     path_found, visited_nodes_this_run, open_nodes_this_run = ghost.dfs(current_pos_int)
+                elif algorithm == "Astar":
+                    ghost = ASTARGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.astar(current_pos_int)
+                elif algorithm == "UCS":
+                    ghost = UCSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.ucs(current_pos_int)
                 else:  # BFS
                     ghost = BFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
                     path_found, visited_nodes_this_run, open_nodes_this_run = ghost.bfs(current_pos_int)
@@ -355,7 +369,6 @@ class PacmanGameUI:
                 current_mem, peak_mem = tracemalloc.get_traced_memory()
                 peak_mem_kb = peak_mem / 1024
                 tracemalloc.stop()
-            # --- Metrics Measurement End --- 
 
             # --- Store metrics and update ghost movement --- 
             ghost_path = ghost.path if ghost and ghost.path else [current_pos_int]
@@ -380,7 +393,7 @@ class PacmanGameUI:
                 
     def run_algorithm(self, algorithm: str):
         """Run the selected pathfinding algorithm"""
-        if algorithm not in ["DFS", "BFS", "Parallel"]:
+        if algorithm not in ["DFS", "BFS", "UCS", "Astar", "Parallel"]:
             print(f"Algorithm {algorithm} not implemented yet")
             return
             
@@ -428,6 +441,12 @@ class PacmanGameUI:
                 if algorithm == "DFS":
                     ghost = DFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
                     path_found, visited_nodes_this_run, open_nodes_this_run = ghost.dfs(current_pos_int)
+                elif algorithm == "Astar":
+                    ghost = ASTARGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.astar(current_pos_int)
+                elif algorithm == "UCS":
+                    ghost = UCSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
+                    path_found, visited_nodes_this_run, open_nodes_this_run = ghost.ucs(current_pos_int)
                 else:  # BFS
                     ghost = BFSGhost(current_pos_int, ghost_type, self.maze, self.game_state)
                     path_found, visited_nodes_this_run, open_nodes_this_run = ghost.bfs(current_pos_int)
@@ -666,17 +685,34 @@ class PacmanGameUI:
                     exec_time = self.execution_times_last_run.get(ghost_type, 0)
                     mem_used = self.memory_used_last_run.get(ghost_type, 0)
 
-                    path_text = self.font.render(
-                        f"  Last Run -> Len: {path_len} | Expanded: {expanded_nodes_lr} | "
-                        f"Time: {exec_time:.4f}s | Mem: {mem_used:.2f} KB",
-                        True, WHITE)
-                    self.info_surface.blit(path_text, (0, info_y))
+                    # Wrap long text to fit in the info panel
+                    path_text = f"Len: {path_len}"
+                    path_render = self.font.render(path_text, True, WHITE)
+                    self.info_surface.blit(path_render, (5, info_y))
+                    info_y += FONT_SIZE + 2
+                    
+                    expanded_text = f"Expanded: {expanded_nodes_lr}"
+                    expanded_render = self.font.render(expanded_text, True, WHITE)
+                    self.info_surface.blit(expanded_render, (5, info_y))
+                    info_y += FONT_SIZE + 2
+                    
+                    time_text = f"Time: {exec_time:.4f}s"
+                    time_render = self.font.render(time_text, True, WHITE)
+                    self.info_surface.blit(time_render, (5, info_y))
+                    info_y += FONT_SIZE + 2
+                    
+                    mem_text = f"Mem: {mem_used:.2f} KB"
+                    mem_render = self.font.render(mem_text, True, WHITE)
+                    self.info_surface.blit(mem_render, (5, info_y))
                     info_y += FONT_SIZE + 10
         elif not self.active_algorithm and not self.game_over and not self.win:
-            # Display instructions in a more compact format at the bottom left
+            # Display instructions in a more compact format
             instructions = [
-                "Algorithms: Left buttons | Levels: Right buttons",
-                "Controls: Arrow keys | Scroll: Ctrl+Up/Down | Reset: R"
+                "Algorithms: Left buttons",
+                "Levels: Right buttons",
+                "Controls: Arrow keys",
+                "Scroll: Ctrl+Up/Down",
+                "Reset: R"
             ]
             for instruction in instructions:
                 text = self.font.render(instruction, True, WHITE)
@@ -697,7 +733,7 @@ class PacmanGameUI:
             scroll_bar_y_ratio = self.scroll_y / self.max_scroll if self.max_scroll > 0 else 0
             scroll_bar_pos_y = self.info_rect.top + (self.info_rect.height - scroll_bar_height) * scroll_bar_y_ratio
             pygame.draw.rect(self.screen, GRAY,
-                           (self.screen_width - PADDING - 5, 
+                           (self.info_rect.right - 5, 
                             scroll_bar_pos_y,
                             5, scroll_bar_height))
 
